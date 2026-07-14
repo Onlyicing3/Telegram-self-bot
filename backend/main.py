@@ -2,8 +2,8 @@
 LifeOS — deterministic entry point.
 
 Startup phases (strict sequential):
-  1. Config validation (hard-exit on missing vars)
-  2. Database connection warm-up
+  1. Config validation (hard-exit on missing required vars only)
+  2. Database warm-up (optional — continues on failure)
   3. Telethon client — connect + authorize
   4. Command handler registration (exactly once)
   5. Bio cron resume (if persisted active in DB)
@@ -26,7 +26,7 @@ import backend.config as cfg_module
 from backend.bio import engine as bio_engine
 from backend.bot.client import build_client
 from backend.bot.router import register_all
-from backend.db.client import get_db
+from backend.db import client as db_client
 from backend.web.app import app as web_app
 
 logging.basicConfig(
@@ -39,7 +39,6 @@ logging.getLogger("telethon").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# Held so the shutdown sequence can signal Uvicorn directly.
 _uvicorn_server: uvicorn.Server | None = None
 
 
@@ -57,26 +56,27 @@ async def _run_web(port: int) -> None:
 
 
 async def main() -> None:
-    # ── Phase 0: Config ───────────────────────────────────────────────────
     cfg = cfg_module.load()
 
-    # One-shot shutdown event; set by OS signals or Telethon disconnect.
     shutdown: asyncio.Event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(sig, shutdown.set)
         except NotImplementedError:
-            # Windows — signals not supported on event loop; Ctrl-C still works.
             pass
 
-    # ── Phase 1: Database warm-up ─────────────────────────────────────────
+    # ── Phase 1: Database warm-up (optional) ──────────────────────────────
     logger.info("[1/5] Database warm-up")
-    try:
-        get_db().table("bot_logs").select("id").limit(1).execute()
-        logger.info("[1/5] Database OK")
-    except Exception as exc:
-        logger.warning("[1/5] Database warm-up failed (%s) — continuing", exc)
+    db = db_client.get_db()
+    if db:
+        try:
+            db.table("bot_logs").select("id").limit(1).execute()
+            logger.info("[1/5] Database OK")
+        except Exception as exc:
+            logger.warning("[1/5] Database warm-up failed (%s) — continuing", exc)
+    else:
+        logger.info("[1/5] Using in-memory fallback — no database required")
 
     # ── Phase 2: Telethon client ──────────────────────────────────────────
     logger.info("[2/5] Connecting Telethon")
@@ -89,17 +89,15 @@ async def main() -> None:
     # ── Phase 4: Resume bio cron if it was active before last restart ─────
     logger.info("[4/5] Bio cron resume check")
     try:
-        result = (
-            get_db()
-            .table("bio_state")
-            .select("is_active")
-            .eq("owner_id", cfg["OWNER_ID"])
-            .maybeSingle()
-            .execute()
-        )
-        if result.data and result.data.get("is_active"):
+        state = db_client.get_bio_state(cfg["OWNER_ID"])
+        if state and state.get("is_active"):
             bio_engine.start_cron(client, cfg["OWNER_ID"], cfg["TZ"])
             logger.info("[4/5] Bio cron resumed")
+        elif cfg.get("BIO_UPDATE_ENABLED"):
+            bio_engine.start_cron(client, cfg["OWNER_ID"], cfg["TZ"])
+            logger.info("[4/5] Bio cron started (BIO_UPDATE_ENABLED=true)")
+        else:
+            logger.info("[4/5] Bio cron not active — skipping")
     except Exception as exc:
         logger.warning("[4/5] Bio cron resume check failed: %s", exc)
 

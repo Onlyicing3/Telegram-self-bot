@@ -5,7 +5,7 @@
 import logging
 from telethon import events
 from backend.bot.handlers.guard import is_owner
-from backend.db.client import get_db
+from backend.db import client as db_client
 
 logger = logging.getLogger(__name__)
 
@@ -18,16 +18,14 @@ def register(client, owner_id: int):
             return
 
         action = event.pattern_match.group(1)
-        db = get_db()
 
         if action == "list":
             try:
-                saves_res = db.table("saved_items").select("id", count="exact").eq("owner_id", owner_id).execute()
-                fwd_res = db.table("saved_items").select("id", count="exact").eq("owner_id", owner_id).eq("save_type", "forward").execute()
-                deep_res = db.table("saved_items").select("id", count="exact").eq("owner_id", owner_id).eq("save_type", "deep").execute()
-                logs_res = db.table("bot_logs").select("id", count="exact").eq("owner_id", owner_id).execute()
-                bio_res = db.table("bio_state").select("*").eq("owner_id", owner_id).maybeSingle().execute()
-                bio = bio_res.data
+                total = db_client.count_saves(owner_id)
+                fwd = db_client.count_saves(owner_id, "forward")
+                deep = db_client.count_saves(owner_id, "deep")
+                logs = db_client.count_logs(owner_id)
+                bio = db_client.get_bio_state(owner_id)
 
                 bio_status = "OFF"
                 bio_template = "—"
@@ -38,11 +36,11 @@ def register(client, owner_id: int):
                 lines = [
                     "**LifeOS Status**\n",
                     f"📦 **Saves**",
-                    f"  Total: `{saves_res.count or 0}`",
-                    f"  Forward: `{fwd_res.count or 0}`",
-                    f"  Deep: `{deep_res.count or 0}`\n",
+                    f"  Total: `{total}`",
+                    f"  Forward: `{fwd}`",
+                    f"  Deep: `{deep}`\n",
                     f"📋 **Logs**",
-                    f"  Entries: `{logs_res.count or 0}`\n",
+                    f"  Entries: `{logs}`\n",
                     f"🧬 **Bio Engine**",
                     f"  Status: `{bio_status}`",
                     f"  Template: `{bio_template}`",
@@ -54,10 +52,7 @@ def register(client, owner_id: int):
 
         elif action == "clean":
             try:
-                from datetime import datetime, timedelta, timezone
-                cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-                result = db.table("bot_logs").delete().eq("owner_id", owner_id).lt("created_at", cutoff).execute()
-                deleted = len(result.data) if result.data else 0
+                deleted = db_client.clean_logs(owner_id, days=7)
                 await event.edit(f"🧹 Cleaned `{deleted}` log entries older than 7 days.")
             except Exception as exc:
                 logger.error("organize clean failed: %s", exc)

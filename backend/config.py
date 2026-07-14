@@ -1,6 +1,8 @@
 """
-Environment variable loader with hard-fail on missing required keys.
-All credentials read exclusively from os.getenv — nothing hardcoded.
+Environment variable loader.
+
+Required vars hard-fail; optional vars use sensible defaults.
+Supabase is optional — the bot runs without it (in-memory fallback).
 """
 import os
 import sys
@@ -10,8 +12,6 @@ REQUIRED = [
     "API_HASH",
     "SESSION_STRING",
     "BOT_OWNER_ID",
-    "SUPABASE_URL",
-    "SUPABASE_SERVICE_ROLE_KEY",
 ]
 
 
@@ -21,14 +21,22 @@ def load() -> dict:
         print(f"[FATAL] Missing required environment variables: {', '.join(missing)}", flush=True)
         sys.exit(1)
 
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
     return {
         "API_ID": int(os.environ["API_ID"]),
         "API_HASH": os.environ["API_HASH"],
         "SESSION_STRING": os.environ["SESSION_STRING"],
         "OWNER_ID": int(os.environ["BOT_OWNER_ID"]),
-        "SUPABASE_URL": os.environ["SUPABASE_URL"],
-        "SUPABASE_KEY": os.environ["SUPABASE_SERVICE_ROLE_KEY"],
+        "SUPABASE_URL": supabase_url,
+        "SUPABASE_KEY": supabase_key,
+        "SUPABASE_AVAILABLE": bool(supabase_url and supabase_key),
         "DATABASE_URL": os.getenv("DATABASE_URL", ""),
         "TZ": os.getenv("TZ", "Asia/Tehran"),
         "PORT": int(os.getenv("PORT", "8000")),
+        "GHOST_ROOM_ID": os.getenv("GHOST_ROOM_ID", ""),
+        "DEST_CHANNEL_ID": os.getenv("DEST_CHANNEL_ID", ""),
+        "BIO_UPDATE_ENABLED": os.getenv("BIO_UPDATE_ENABLED", "false").lower() == "true",
+        "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO").upper(),
     }

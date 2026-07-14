@@ -31,11 +31,13 @@ async def build_client(
         flood_sleep_threshold=60,
     )
     await client.connect()
+
     if not await client.is_user_authorized():
         raise RuntimeError(
-            "[FATAL] Telethon session is not authorized. "
+            "Telethon session is not authorized. "
             "Re-generate SESSION_STRING and update the environment variable."
         )
+
     me = await client.get_me()
     logger.info("Telethon connected as %s (id=%s)", me.first_name, me.id)
     return client

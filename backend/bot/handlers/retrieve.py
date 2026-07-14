@@ -5,7 +5,7 @@
 import logging
 from telethon import events
 from backend.bot.handlers.guard import is_owner
-from backend.db.client import get_db, log
+from backend.db import client as db_client
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,8 @@ def register(client, owner_id: int):
         if not is_owner(event, owner_id):
             return
         save_code = event.pattern_match.group(1).upper()
-        db = get_db()
         try:
-            result = db.table("saved_items").select("*").eq("save_code", save_code).maybeSingle().execute()
-            row = result.data
+            row = db_client.query_save(save_code)
         except Exception as exc:
             logger.error("preview db error: %s", exc)
             await event.edit(f"❌ DB error: {exc}")
@@ -52,10 +50,8 @@ def register(client, owner_id: int):
         if not is_owner(event, owner_id):
             return
         save_code = event.pattern_match.group(1).upper()
-        db = get_db()
         try:
-            result = db.table("saved_items").select("*").eq("save_code", save_code).maybeSingle().execute()
-            row = result.data
+            row = db_client.query_save(save_code)
         except Exception as exc:
             logger.error("send db error: %s", exc)
             await event.edit(f"❌ DB error: {exc}")
@@ -79,7 +75,7 @@ def register(client, owner_id: int):
             await event.edit(f"❌ Forward failed: {exc}")
             return
 
-        await log(owner_id, "INFO", f"Sent {save_code} to {target_chat}", {
+        await db_client.log(owner_id, "INFO", f"Sent {save_code} to {target_chat}", {
             "save_code": save_code,
             "target_chat": target_chat,
         })

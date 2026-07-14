@@ -9,6 +9,7 @@ Safety guarantees:
   - Empty-download guard rejects corrupted or zero-byte transfers.
   - Edit-first policy: every response edits the triggering message in-place.
 """
+import asyncio
 import io
 import logging
 from datetime import datetime
@@ -18,12 +19,11 @@ from telethon import events
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
 from backend.bot.handlers.guard import is_owner
-from backend.db.client import get_db, get_next_save_code, log
+from backend.db import client as db_client
 
 logger = logging.getLogger(__name__)
 
-# Hard ceiling for in-memory deep save on Render Free (512 MB RAM).
-_MAX_DEEP_BYTES = 50 * 1024 * 1024  # 50 MB
+_MAX_DEEP_BYTES = 50 * 1024 * 1024
 
 _MEDIA_TYPE_MAP = {
     "image/jpeg": "Photo",
@@ -82,7 +82,6 @@ def _build_caption(
 
 
 def _unwrap_forward(result) -> object | None:
-    """Telethon forward_messages may return a scalar or a list."""
     if result is None:
         return None
     return result[0] if isinstance(result, list) else result
@@ -101,8 +100,7 @@ def register(client, owner_id: int, tz_str: str) -> None:
             await event.edit("⚠️ Reply to a message to save it.")
             return
 
-        db = get_db()
-        save_code = await get_next_save_code(db)
+        save_code = await db_client.get_next_save_code()
         tz = pytz.timezone(tz_str)
         now = datetime.now(tz)
 
@@ -160,7 +158,7 @@ def register(client, owner_id: int, tz_str: str) -> None:
                 await event.edit(f"❌ Forward failed: {exc}")
                 return
 
-            db.table("saved_items").insert({
+            db_client.insert_save({
                 "save_code": save_code,
                 "save_type": "forward",
                 "origin_chat_id": origin_chat_id,
@@ -176,7 +174,8 @@ def register(client, owner_id: int, tz_str: str) -> None:
                 "tags": tags,
                 "caption": None,
                 "owner_id": owner_id,
-            }).execute()
+                "created_at": now.isoformat(),
+            })
 
             await event.edit(
                 f"📌 **Forward Saved** `{save_code}`\n"
@@ -189,7 +188,6 @@ def register(client, owner_id: int, tz_str: str) -> None:
                 await event.edit("⚠️ Replied message has no downloadable media.")
                 return
 
-            # Pre-flight: reject files that would exhaust available memory.
             if file_size and file_size > _MAX_DEEP_BYTES:
                 mb = file_size / (1024 * 1024)
                 await event.edit(
@@ -199,7 +197,6 @@ def register(client, owner_id: int, tz_str: str) -> None:
                 )
                 return
 
-            # Build caption before download (save_code is already known).
             caption = _build_caption(
                 save_code=save_code,
                 sender=sender_name,
@@ -216,6 +213,7 @@ def register(client, owner_id: int, tz_str: str) -> None:
             await event.edit(f"⬇️ Downloading… (`{save_code}`)")
 
             buf = io.BytesIO()
+            sent = None
             try:
                 await client.download_media(reply, file=buf)
 
@@ -246,12 +244,12 @@ def register(client, owner_id: int, tz_str: str) -> None:
                 await event.edit(f"❌ Download failed: {exc}")
                 return
             finally:
-                buf.close()  # Release memory regardless of outcome
+                buf.close()
 
-            saved_chat_id = sent.chat_id
-            saved_msg_id = sent.id
+            saved_chat_id = sent.chat_id if sent else None
+            saved_msg_id = sent.id if sent else None
 
-            db.table("saved_items").insert({
+            db_client.insert_save({
                 "save_code": save_code,
                 "save_type": "deep",
                 "origin_chat_id": origin_chat_id,
@@ -267,7 +265,8 @@ def register(client, owner_id: int, tz_str: str) -> None:
                 "tags": tags,
                 "caption": caption,
                 "owner_id": owner_id,
-            }).execute()
+                "created_at": now.isoformat(),
+            })
 
             await event.edit(
                 f"✅ **Deep Saved** `{save_code}`\n"
@@ -275,7 +274,7 @@ def register(client, owner_id: int, tz_str: str) -> None:
                 f"{f'{file_size / 1024:.1f} KB' if file_size else '—'}"
             )
 
-        await log(owner_id, "INFO", f"Saved {mode.upper()} {save_code}", {
+        await db_client.log(owner_id, "INFO", f"Saved {mode.upper()} {save_code}", {
             "save_code": save_code,
             "origin_chat_id": origin_chat_id,
             "origin_msg_id": origin_msg_id,

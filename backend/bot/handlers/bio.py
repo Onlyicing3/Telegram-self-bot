@@ -6,7 +6,7 @@ All sub-commands edit the triggering message in-place (zero-spam policy).
   .bio template <tpl>    — Set template
   .bio text <text>       — Set {text} token
   .bio mood <mood>       — Set {mood} token
-  .bio on                — Start Tehran-synchronized cron
+  .bio on                — Start timezone-synchronized cron
   .bio off               — Stop cron
   .bio show              — Inspect current state
 """
@@ -18,13 +18,13 @@ from telethon import events
 
 from backend.bio import engine as bio_engine
 from backend.bot.handlers.guard import is_owner
-from backend.db.client import get_db
+from backend.db import client as db_client
 
 logger = logging.getLogger(__name__)
 
 _HELP = (
     "**Bio Engine — Token Reference**\n\n"
-    "`{time}` — Current time (HH:MM, Tehran)\n"
+    "`{time}` — Current time (HH:MM)\n"
     "`{mood}` — Current mood value\n"
     "`{text}` — Custom freeform text\n\n"
     "**Commands**\n"
@@ -39,15 +39,6 @@ _HELP = (
 )
 
 
-def _get_or_create_state(db, owner_id: int) -> dict:
-    result = db.table("bio_state").select("*").eq("owner_id", owner_id).maybeSingle().execute()
-    if result.data:
-        return result.data
-    db.table("bio_state").insert({"owner_id": owner_id}).execute()
-    result = db.table("bio_state").select("*").eq("owner_id", owner_id).maybeSingle().execute()
-    return result.data
-
-
 def register(client, owner_id: int, tz_str: str):
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.bio(?:\s+(.+))?$"))
@@ -56,16 +47,14 @@ def register(client, owner_id: int, tz_str: str):
             return
 
         arg = (event.pattern_match.group(1) or "").strip()
-        db = get_db()
 
         try:
-            state = _get_or_create_state(db, owner_id)
+            state = db_client.get_or_create_bio_state(owner_id)
         except Exception as exc:
             logger.error("bio db init failed: %s", exc)
             await event.edit(f"❌ DB error: {exc}")
             return
 
-        # Explicit parentheses to make operator precedence unambiguous
         if (not arg) or (arg in ("help", "template") and " " not in arg):
             if arg == "template":
                 await event.edit(
@@ -81,21 +70,21 @@ def register(client, owner_id: int, tz_str: str):
             if not new_tpl:
                 await event.edit("⚠️ Template cannot be empty.")
                 return
-            db.table("bio_state").update({"template": new_tpl}).eq("owner_id", owner_id).execute()
+            db_client.update_bio_state(owner_id, {"template": new_tpl})
             await event.edit(f"✅ Template updated:\n`{new_tpl}`")
 
         elif arg.startswith("text "):
             val = arg[5:].strip()
-            db.table("bio_state").update({"custom_text": val}).eq("owner_id", owner_id).execute()
+            db_client.update_bio_state(owner_id, {"custom_text": val})
             await event.edit(f"✅ Text set to: `{val}`")
 
         elif arg.startswith("mood "):
             val = arg[5:].strip()
-            db.table("bio_state").update({"mood": val}).eq("owner_id", owner_id).execute()
+            db_client.update_bio_state(owner_id, {"mood": val})
             await event.edit(f"✅ Mood set to: `{val}`")
 
         elif arg == "on":
-            db.table("bio_state").update({"is_active": True}).eq("owner_id", owner_id).execute()
+            db_client.update_bio_state(owner_id, {"is_active": True})
             bio_engine.start_cron(client, owner_id, tz_str)
             preview = bio_engine.render_bio(
                 state.get("template", "🕒 {time} | 💭 {mood}"),
@@ -106,7 +95,7 @@ def register(client, owner_id: int, tz_str: str):
             await event.edit(f"✅ Bio cron **ON**\nPreview: `{preview}`")
 
         elif arg == "off":
-            db.table("bio_state").update({"is_active": False}).eq("owner_id", owner_id).execute()
+            db_client.update_bio_state(owner_id, {"is_active": False})
             bio_engine.stop_cron()
             await event.edit("⏹ Bio cron **OFF**")
 
